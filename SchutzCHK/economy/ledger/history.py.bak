@@ -1,0 +1,31 @@
+from libsql_client import create_client_sync
+
+DB_URL = "libsql://reichschk-vallxploit.aws-ap-south-1.turso.io"
+DB_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODEwMzE3MzMsImlkIjoiMDE5ZWFkYmUtZmEwMS03MzRiLTgyNGQtMDMzYmFiMWM5MmExIiwicmlkIjoiZmRmNjAzODUtZjAyNS00MWQwLTlmOGQtMjBhNDQ1MmUxZjc4In0.Wj_2ES-sbFaXu3nVNvjvkt3PD0HulBwq0jVBY_DFupgMryhHf9iKHqYmfKPB5EJ7fExq1HSHwAjHXlfVO4EVBg"
+
+client = create_client_sync(url=DB_URL, auth_token=DB_TOKEN)
+
+
+def get_history(telegram_id: int, limit: int = 20):
+    result = client.execute(
+        """
+        SELECT *
+        FROM ledger
+        WHERE user_id = ?
+        ORDER BY timestamp DESC
+        LIMIT ?
+        """,
+        [telegram_id, limit]
+    )
+
+    return [
+        {
+            "type": row[1],
+            "amount": row[2],
+            "before": row[3],
+            "after": row[4],
+            "desc": row[5],
+            "time": row[6]
+        }
+        for row in result.rows
+    ]

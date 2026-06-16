@@ -1,0 +1,19 @@
+from libsql_client import create_client_sync
+import time
+
+DB_URL = "libsql://reichschk-vallxploit.aws-ap-south-1.turso.io"
+DB_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODEwMzE3MzMsImlkIjoiMDE5ZWFkYmUtZmEwMS03MzRiLTgyNGQtMDMzYmFiMWM5MmExIiwicmlkIjoiZmRmNjAzODUtZjAyNS00MWQwLTlmOGQtMjBhNDQ1MmUxZjc4In0.Wj_2ES-sbFaXu3nVNvjvkt3PD0HulBwq0jVBY_DFupgMryhHf9iKHqYmfKPB5EJ7fExq1HSHwAjHXlfVO4EVBg"
+
+client = create_client_sync(url=DB_URL, auth_token=DB_TOKEN)
+
+
+def add_reserve(amount: float, source: str):
+    client.execute("""
+        INSERT INTO reserve (amount, source, created_at)
+        VALUES (?, ?, ?)
+    """, [amount, source, int(time.time())])
+
+
+def get_total_reserve():
+    result = client.execute("SELECT SUM(amount) FROM reserve")
+    return result.rows[0][0] if result.rows else 0
