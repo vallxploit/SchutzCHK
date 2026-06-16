@@ -1,0 +1,57 @@
+from libsql_client import create_client_sync
+
+DB_URL = "libsql://reichschk-vallxploit.aws-ap-south-1.turso.io"
+DB_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODEwMzE3MzMsImlkIjoiMDE5ZWFkYmUtZmEwMS03MzRiLTgyNGQtMDMzYmFiMWM5MmExIiwicmlkIjoiZmRmNjAzODUtZjAyNS00MWQwLTlmOGQtMjBhNDQ1MmUxZjc4In0.Wj_2ES-sbFaXu3nVNvjvkt3PD0HulBwq0jVBY_DFupgMryhHf9iKHqYmfKPB5EJ7fExq1HSHwAjHXlfVO4EVBg"
+
+client = create_client_sync(url=DB_URL, auth_token=DB_TOKEN)
+
+
+def get_wallet_by_telegram_id(telegram_id: int):
+    result = client.execute(
+        """
+        SELECT telegram_id, wallet_address, created_at
+        FROM wallets
+        WHERE telegram_id = ?
+        """,
+        [telegram_id]
+    )
+
+    if not result.rows:
+        return None
+
+    row = result.rows[0]
+
+    return {
+        "telegram_id": row[0],
+        "wallet_address": row[1],
+        "created_at": row[2]
+    }
+
+
+def get_telegram_id_by_wallet(wallet_address: str):
+    result = client.execute(
+        """
+        SELECT telegram_id
+        FROM wallets
+        WHERE wallet_address = ?
+        """,
+        [wallet_address]
+    )
+
+    if not result.rows:
+        return None
+
+    return result.rows[0][0]
+
+
+def wallet_exists(telegram_id: int) -> bool:
+    result = client.execute(
+        """
+        SELECT 1
+        FROM wallets
+        WHERE telegram_id = ?
+        """,
+        [telegram_id]
+    )
+
+    return len(result.rows) > 0

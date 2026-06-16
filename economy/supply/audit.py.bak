@@ -1,0 +1,31 @@
+from libsql_client import create_client_sync
+
+DB_URL = "libsql://reichschk-vallxploit.aws-ap-south-1.turso.io"
+DB_TOKEN = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3ODEwMzE3MzMsImlkIjoiMDE5ZWFkYmUtZmEwMS03MzRiLTgyNGQtMDMzYmFiMWM5MmExIiwicmlkIjoiZmRmNjAzODUtZjAyNS00MWQwLTlmOGQtMjBhNDQ1MmUxZjc4In0.Wj_2ES-sbFaXu3nVNvjvkt3PD0HulBwq0jVBY_DFupgMryhHf9iKHqYmfKPB5EJ7fExq1HSHwAjHXlfVO4EVBg"
+
+client = create_client_sync(url=DB_URL, auth_token=DB_TOKEN)
+
+
+def run_audit():
+    # 1. total balance
+    bal = client.execute("SELECT SUM(balance) FROM balances")
+    total_balance = bal.rows[0][0] or 0
+
+    # 2. total reserve
+    res = client.execute("SELECT SUM(amount) FROM reserve")
+    total_reserve = res.rows[0][0] or 0
+
+    # 3. ledger check (opsional integrity check)
+    led = client.execute("SELECT SUM(amount) FROM ledger")
+    ledger_total = led.rows[0][0] or 0
+
+    # 4. expected system total
+    system_total = total_balance + total_reserve
+
+    return {
+        "balance_total": total_balance,
+        "reserve_total": total_reserve,
+        "ledger_net": ledger_total,
+        "system_total": system_total,
+        "status": "ok" if system_total >= 0 else "warning"
+    }
