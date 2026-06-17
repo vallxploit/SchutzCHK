@@ -17,7 +17,7 @@ from bot.ui.handlers import (
 )
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
-BOT_TOKEN = os.getenv("BOT_TOKEN", "8716607201:AAF8jEcuPn1I4uTXTk9Ti5GaGveQqJl0F1g")
+BOT_TOKEN = os.getenv("BOT_TOKEN", "8716607201:AAHkAUn_ujOn3HESsc8IMC_X5tFrCqSglJU")
 
 pending_transfers = {}
 
