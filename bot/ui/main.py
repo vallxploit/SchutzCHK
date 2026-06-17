@@ -302,7 +302,7 @@ async def msh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args:
         await update.message.reply_text("Usage: /msh <card1> <card2> ... (max 20 cards)")
         return
-        
+
     cards = args[:20]
     total_cards = len(cards)
     if total_cards == 0:
@@ -314,11 +314,10 @@ async def msh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     msg = await update.message.reply_text(f"⏳ Processing {total_cards} cards...\nPlease wait, proses berjalan di background.")
-    
-    # FIX BUG: Gunakan asyncio.gather agar paralel dan tidak kena rate limit edit message
+
     tasks = [check_shopify(card, proxy) for card in cards]
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    
+
     total_cost = 0.0
     all_output_lines = []
     current_balance = get_balance(user_id)
@@ -328,38 +327,39 @@ async def msh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if isinstance(result, Exception):
             all_output_lines.append(f"{idx}. ❌ Error: {str(result)[:30]}")
             continue
-            
+
         status = result.get("status", "ERROR")
         cost = COST.get(status, 0.0)
-        
+
         if cost > 0:
             if current_balance < cost:
                 all_output_lines.append(f"{idx}. ⚠️ Insufficient balance, skipped.")
                 continue
+            old_bal = current_balance
             current_balance = add_balance(user_id, -cost)
-            create_ledger_entry(user_id, "GATEWAY_FEE", -cost, current_balance + cost, current_balance,
+            create_ledger_entry(user_id, "GATEWAY_FEE", -cost, old_bal, current_balance,
                                 f"Mass Shopify - {status} - {card[:12]}...")
             add_reserve(cost, f"shopify_mass_{user_id}_{int(time.time())}_{idx}")
             total_cost += cost
 
         bin6 = card.split("|")[0][:6]
         bin_info = await get_bin_info(bin6)
-        
+
         if status == "ERROR":
             amount_display = "-"
         else:
             amount_display = f"{result.get('amount', '0')} {result.get('currency', 'USD')}"
 
-    if status == "CHARGED":
-        emoji, statustxt = "🔥", "𝐂𝐡𝐚𝐫𝐠𝐞𝐝 🔥"
-    elif status == "LIVE":
-        emoji, statustxt = "💳", "𝐋𝐢𝐯𝐞 💳"
-    elif status == "DEAD":
-        emoji, statustxt = "💀", "𝐃𝐞𝐚𝐝 💀"
-    elif status == "CAPTCHA_REQUIRED":
-        emoji, statustxt = "🤖", "𝐂𝐚𝐩𝐭𝐜𝐡𝐚 🤖"
-    else:
-        emoji, statustxt = "⚠️", "𝐄𝐫𝐫𝐨𝐫 ⚠️"
+        if status == "CHARGED":
+            emoji, statustxt = "🔥", "𝐂𝐡𝐚𝐫𝐠𝐞𝐝 🔥"
+        elif status == "LIVE":
+            emoji, statustxt = "💳", "𝐋𝐢𝐯𝐞 💳"
+        elif status == "DEAD":
+            emoji, statustxt = "💀", "𝐃𝐞𝐚𝐝 💀"
+        elif status == "CAPTCHA_REQUIRED":
+            emoji, statustxt = "🤖", "𝐂𝐚𝐩𝐭𝐜𝐡𝐚 🤖"
+        else:
+            emoji, statustxt = "⚠️", "𝐄𝐫𝐫𝐨𝐫 ⚠️"
 
         raw = result.get('raw', {})
         response_text = raw.get('response', 'N/A') if isinstance(raw, dict) else str(raw)[:50]
@@ -380,22 +380,22 @@ async def msh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     final_balance = get_balance(user_id)
     total_debited = initial_balance - final_balance
     elapsed = time.time() - start_total
-    
+
     final_text = f"✅ MASS CHECK COMPLETED\nTotal cards: {total_cards} | Total debited: {total_debited:.4f} RSM\nNew Balance: {final_balance:.6f} RSM\n⏱️ Total time: {elapsed:.2f} seconds\n\n"
     full_output = final_text + "\n\n".join(all_output_lines)
-    
+
     if len(full_output) > 4000:
         await msg.edit_text(final_text)
         for i in range(0, len(all_output_lines), 3):
             chunk = "\n\n".join(all_output_lines[i:i+3])
             try:
                 await update.message.reply_text(chunk)
-                await asyncio.sleep(0.5) # <--- WAJIB! Biar gak kena spam block Telegram
+                await asyncio.sleep(0.5)
             except Exception as e:
                 print(f"Error sending chunk: {e}")
     else:
         await msg.edit_text(full_output)
-        
+
     if total_cost > 0:
         await update.message.reply_text(f"💰 Total fee deducted: {total_cost:.4f} RSM")
 
@@ -475,7 +475,8 @@ async def shtxt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats = {"total": total_cards, "charged": 0, "live": 0, "dead": 0, "skip": 0, "error": 0}
     total_cost = 0.0
     current_balance = get_balance(user_id)
-    initial_balance = current_balance    processed = 0
+    initial_balance = current_balance
+    processed = 0
     last_edit_time = 0
     batch_size = 5
     
@@ -501,8 +502,9 @@ async def shtxt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if current_balance < cost:
                     stats["skip"] += 1
                     continue
+                old_bal = current_balance
                 current_balance = add_balance(user_id, -cost)
-                create_ledger_entry(user_id, "GATEWAY_FEE", -cost, current_balance + cost, current_balance,
+                create_ledger_entry(user_id, "GATEWAY_FEE", -cost, old_bal, current_balance,
                                     f"TXT Shopify - {status} - {card[:12]}...")
                 add_reserve(cost, f"shopify_txt_{user_id}_{int(time.time())}_{processed}")
                 total_cost += cost
@@ -523,7 +525,8 @@ async def shtxt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif status == "ERROR":
                 stats["error"] += 1
                 
-            if processed % 10 == 0 or processed == total_cards:                if time.time() - last_edit_time >= 2.0 or processed == total_cards:
+            if processed % 10 == 0 or processed == total_cards:
+                if time.time() - last_edit_time >= 2.0 or processed == total_cards:
                     progress_text = (f"📊 PROGRESS: {processed}/{total_cards}\n"
                                      f"🔥 Charged: {stats['charged']}\n"
                                      f"💳 Live: {stats['live']}\n"
