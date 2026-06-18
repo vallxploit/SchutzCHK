@@ -21,6 +21,28 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "8716607201:AAHkAUn_ujOn3HESsc8IMC_X5tFrCqSgl
 
 pending_transfers = {}
 
+# ============ COOLDOWN & SESSION TRACKING ============
+_cooldowns: dict = {}
+_shtxt_sessions: dict = {}
+_shtxt_cooldown: dict = {}
+
+COOLDOWN_SECONDS = {
+    "sh": 3,
+    "msh": 5,
+    "shtxt": 10,
+}
+
+def check_cooldown(user_id: int, cmd: str) -> float:
+    last = _cooldowns.get(user_id, {}).get(cmd, 0)
+    limit = COOLDOWN_SECONDS.get(cmd, 0)
+    sisa = limit - (time.time() - last)
+    return max(0.0, sisa)
+
+def set_cooldown(user_id: int, cmd: str):
+    if user_id not in _cooldowns:
+        _cooldowns[user_id] = {}
+    _cooldowns[user_id][cmd] = time.time()
+
 # ============ DATABASE CONNECTION ============
 from database.connection import execute, fetch_one, fetch_all
 
@@ -199,6 +221,12 @@ async def remove_proxy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     execute("DELETE FROM user_proxy WHERE user_id = ?", [user_id])
     await update.message.reply_text("✅ Proxy removed.")
 
+    sisa = check_cooldown(user_id, "sh")
+    if sisa > 0:
+        await update.message.reply_text(f"⏳ Cooldown /sh — tunggu {sisa:.1f} detik lagi.")
+        return
+    set_cooldown(user_id, "sh")
+    
 async def get_user_proxy(user_id: int) -> str:
     """Ambil proxy user"""
     row = fetch_one("SELECT proxy FROM user_proxy WHERE user_id = ?", [user_id])
@@ -221,6 +249,11 @@ COST = {
 async def sh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_time = time.time()
     user_id = update.effective_user.id
+    sisa = check_cooldown(user_id, "sh")
+    if sisa > 0:
+        await update.message.reply_text(f"⏳ Cooldown /sh — tunggu {sisa:.1f} detik lagi.")
+        return
+    set_cooldown(user_id, "sh")
     args = context.args
     if not args:
         await update.message.reply_text("Usage: /sh <cc|mm|yy|cvv>\nContoh: /sh 5258551761432947|12|28|456")
@@ -298,6 +331,11 @@ async def sh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def msh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_total = time.time()
     user_id = update.effective_user.id
+    sisa = check_cooldown(user_id, "msh")
+    if sisa > 0:
+        await update.message.reply_text(f"⏳ Cooldown /msh — tunggu {sisa:.1f} detik lagi.")
+        return
+    set_cooldown(user_id, "msh")
     args = context.args
     if not args:
         await update.message.reply_text("Usage: /msh <card1> <card2> ... (max 20 cards)")
@@ -399,6 +437,30 @@ async def msh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if total_cost > 0:
         await update.message.reply_text(f"💰 Total fee deducted: {total_cost:.4f} RSM")
 
+async def shtxt_stop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+
+    data = query.data
+    parts = data.split(":")
+    if len(parts) != 2:
+        await query.answer()
+        return
+
+    requester_id = query.from_user.id
+    owner_id = int(parts[1])
+
+    if requester_id != owner_id:
+        await query.answer("❌ Ini bukan session kamu.", show_alert=True)
+        return
+
+    await query.answer()  # answer SETELAH validasi ownership passed
+
+    if owner_id in _shtxt_sessions:
+        _shtxt_sessions[owner_id].set()
+        await query.edit_message_text("🛑 Stop signal dikirim, menunggu batch selesai...")
+    else:
+        await query.edit_message_text("ℹ️ Session sudah tidak aktif.")
+
 async def send_card_detail(update: Update, card: str, status: str, result: dict, bin_info: dict, username: str):
     amount_display = f"{result.get('amount', '0')} {result.get('currency', 'USD')}"
     if status == "CHARGED":
@@ -407,9 +469,9 @@ async def send_card_detail(update: Update, card: str, status: str, result: dict,
     else:
         emoji = "⚡"
         status_text = "𝐋𝐢𝐯𝐞 ⚡"
-        
+
     level = bin_info.get('level', bin_info.get('card_type', 'Unknown'))
-    
+
     raw = result.get('raw', {})
     response_text = raw.get('response', 'N/A') if isinstance(raw, dict) else str(raw)[:60]
 
@@ -423,33 +485,77 @@ async def send_card_detail(update: Update, card: str, status: str, result: dict,
 🏦 𝗕𝗮𝗻𝗸: {bin_info.get('bank', 'Unknown')}
 🌍 𝗖𝗼𝘂𝗻𝘁𝗿𝘆: {bin_info.get('country_flag', '')} {bin_info.get('country', 'Unknown')}
 👤 𝗖𝗵𝗲𝗰𝗸𝗲𝗱 𝗯𝘆: @{username}"""
-    
+
     await update.message.reply_text(msg)
 
+async def shtxt_stop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handler untuk tombol STOP di /shtxt."""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data  # format: "shtxt_stop:<user_id>"
+    parts = data.split(":")
+    if len(parts) != 2:
+        return
+
+    requester_id = query.from_user.id
+    owner_id = int(parts[1])
+
+    if requester_id != owner_id:
+        await query.answer("❌ Ini bukan session kamu.", show_alert=True)
+        return
+
+    if owner_id in _shtxt_sessions:
+        _shtxt_sessions[owner_id].set()  # trigger stop signal
+        await query.edit_message_text("🛑 Stop signal dikirim, menunggu batch selesai...")
+    else:
+        await query.edit_message_text("ℹ️ Session sudah tidak aktif.")
+
 async def shtxt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+
+    user_id = update.effective_user.id
+
+    # Cek apakah user sudah punya session aktif
+    if user_id in _shtxt_sessions:
+        await update.message.reply_text(
+            "⚠️ Kamu masih punya /shtxt yang sedang berjalan.\n"
+            "Tunggu sampai selesai atau tekan tombol STOP di pesan sebelumnya."
+        )
+        return
+
+    # Cek cooldown 10 detik setelah selesai/stop
+    sisa_cd = _shtxt_cooldown.get(user_id, 0)
+    sisa_detik = COOLDOWN_SECONDS["shtxt"] - (time.time() - sisa_cd)
+    if sisa_cd > 0 and sisa_detik > 0:
+        await update.message.reply_text(
+            f"⏳ Cooldown /shtxt — tunggu {sisa_detik:.1f} detik lagi."
+        )
+        return
+
     start_total = time.time()
+
     if not update.message.reply_to_message or not update.message.reply_to_message.document:
         await update.message.reply_text("❌ Reply ke file .txt yang berisi kartu\nContoh: /shtxt (reply ke file txt)")
         return
-        
+
     document = update.message.reply_to_message.document
     if not document.file_name.endswith('.txt'):
         await update.message.reply_text("❌ Harus file .txt")
         return
-        
-    user_id = update.effective_user.id
+
     username = update.effective_user.username or update.effective_user.first_name
-    
+
     proxy = await get_user_proxy(user_id)
     if not proxy:
         await update.message.reply_text("❌ Anda harus set proxy terlebih dahulu. Gunakan /setproxy")
         return
-        
+
     status_msg = await update.message.reply_text("📥 Downloading file...")
     file = await document.get_file()
     file_content = await file.download_as_bytearray()
     text_content = file_content.decode('utf-8', errors='ignore')
-    
+
     lines = text_content.split('\n')
     cards = []
     for line in lines:
@@ -457,21 +563,33 @@ async def shtxt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not line:
             continue
         card = line.replace('/', '|')
-        parts = card.split('|')
-        if len(parts) >= 4:
-            cards.append(f"{parts[0]}|{parts[1]}|{parts[2]}|{parts[3]}")
-            
+        parts_card = card.split('|')
+        if len(parts_card) >= 4:
+            cards.append(f"{parts_card[0]}|{parts_card[1]}|{parts_card[2]}|{parts_card[3]}")
+
     total_cards = len(cards)
     if total_cards == 0:
         await status_msg.edit_text("❌ Tidak ada kartu valid dalam file")
         return
-        
+
     if total_cards > 20000:
         cards = cards[:20000]
         total_cards = 20000
-        
-    await status_msg.edit_text(f"⏳ Processing {total_cards} cards in batches of 5...")
-    
+
+    # Daftarkan session — stop_event digunakan sebagai sinyal berhenti
+    stop_event = asyncio.Event()
+    _shtxt_sessions[user_id] = stop_event
+
+    stop_keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛑 STOP", callback_data=f"shtxt_stop:{user_id}")]
+    ])
+
+    await status_msg.edit_text(
+        f"⏳ Processing {total_cards} cards in batches of 5...\n"
+        f"Tekan STOP untuk menghentikan.",
+        reply_markup=stop_keyboard
+    )
+
     stats = {"total": total_cards, "charged": 0, "live": 0, "dead": 0, "skip": 0, "error": 0}
     total_cost = 0.0
     current_balance = get_balance(user_id)
@@ -479,83 +597,103 @@ async def shtxt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     processed = 0
     last_edit_time = 0
     batch_size = 5
-    
-    for batch_start in range(0, total_cards, batch_size):
-        batch_cards = cards[batch_start:batch_start+batch_size]
-        tasks = [check_shopify(card, proxy) for card in batch_cards]
-        
-        # ✅ FIX UTAMA: return_exceptions=True agar 1 kartu error TIDAK membatalkan sisa kartu di batch
-        batch_results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for card, result in zip(batch_cards, batch_results):
-            processed += 1
-            
-            # ✅ Tangani exception secara individual
-            if isinstance(result, Exception):
-                stats["error"] += 1
-                continue
-                
-            status = result.get("status", "ERROR")
-            cost = COST.get(status, 0.0)
-            
-            if cost > 0:
-                if current_balance < cost:
-                    stats["skip"] += 1
+    stopped_early = False
+
+    try:
+        for batch_start in range(0, total_cards, batch_size):
+            # Cek stop signal sebelum tiap batch
+            if stop_event.is_set():
+                stopped_early = True
+                break
+
+            batch_cards = cards[batch_start:batch_start + batch_size]
+            tasks = [check_shopify(card, proxy) for card in batch_cards]
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for card, result in zip(batch_cards, batch_results):
+                processed += 1
+
+                if isinstance(result, Exception):
+                    stats["error"] += 1
                     continue
-                old_bal = current_balance
-                current_balance = add_balance(user_id, -cost)
-                create_ledger_entry(user_id, "GATEWAY_FEE", -cost, old_bal, current_balance,
-                                    f"TXT Shopify - {status} - {card[:12]}...")
-                add_reserve(cost, f"shopify_txt_{user_id}_{int(time.time())}_{processed}")
-                total_cost += cost
-                
-            bin6 = card.split("|")[0][:6]
-            bin_info = await get_bin_info(bin6)
-            
-            if status == "CHARGED":
-                stats["charged"] += 1
-                await send_card_detail(update, card, status, result, bin_info, username)
-            elif status == "LIVE":
-                stats["live"] += 1
-                await send_card_detail(update, card, status, result, bin_info, username)
-            elif status == "DEAD":
-                stats["dead"] += 1
-            elif status == "CAPTCHA_REQUIRED":
-                stats["skip"] += 1
-            elif status == "ERROR":
-                stats["error"] += 1
-                
-            if processed % 10 == 0 or processed == total_cards:
-                if time.time() - last_edit_time >= 2.0 or processed == total_cards:
-                    progress_text = (f"📊 PROGRESS: {processed}/{total_cards}\n"
-                                     f"🔥 Charged: {stats['charged']}\n"
-                                     f"💳 Live: {stats['live']}\n"
-                                     f"💀 Dead: {stats['dead']}\n"
-                                     f"⚠️ Skip: {stats['skip']}\n"
-                                     f"❌ Error: {stats['error']}")
-                    try:
-                        await status_msg.edit_text(progress_text)
-                        last_edit_time = time.time()
-                    except Exception:
-                        pass
-                        
-        await asyncio.sleep(1.0)
-        
+
+                status = result.get("status", "ERROR")
+                cost = COST.get(status, 0.0)
+
+                if cost > 0:
+                    if current_balance < cost:
+                        stats["skip"] += 1
+                        continue
+                    old_bal = current_balance
+                    current_balance = add_balance(user_id, -cost)
+                    create_ledger_entry(user_id, "GATEWAY_FEE", -cost, old_bal, current_balance,
+                                        f"TXT Shopify - {status} - {card[:12]}...")
+                    add_reserve(cost, f"shopify_txt_{user_id}_{int(time.time())}_{processed}")
+                    total_cost += cost
+
+                bin6 = card.split("|")[0][:6]
+                bin_info = await get_bin_info(bin6)
+
+                if status == "CHARGED":
+                    stats["charged"] += 1
+                    await send_card_detail(update, card, status, result, bin_info, username)
+                elif status == "LIVE":
+                    stats["live"] += 1
+                    await send_card_detail(update, card, status, result, bin_info, username)
+                elif status == "DEAD":
+                    stats["dead"] += 1
+                elif status == "CAPTCHA_REQUIRED":
+                    stats["skip"] += 1
+                elif status == "ERROR":
+                    stats["error"] += 1
+
+                if processed % 10 == 0 or processed == total_cards:
+                    if time.time() - last_edit_time >= 2.0 or processed == total_cards:
+                        progress_text = (
+                            f"📊 PROGRESS: {processed}/{total_cards}\n"
+                            f"🔥 Charged: {stats['charged']}\n"
+                            f"💳 Live: {stats['live']}\n"
+                            f"💀 Dead: {stats['dead']}\n"
+                            f"⚠️ Skip: {stats['skip']}\n"
+                            f"❌ Error: {stats['error']}"
+                        )
+                        try:
+                            await status_msg.edit_text(progress_text, reply_markup=stop_keyboard)
+                            last_edit_time = time.time()
+                        except Exception:
+                            pass
+
+            await asyncio.sleep(1.0)
+
+    finally:
+        # Selalu bersihkan session dan set cooldown, baik selesai normal maupun stop
+        _shtxt_sessions.pop(user_id, None)
+        _shtxt_cooldown[user_id] = time.time()
+
     final_balance = get_balance(user_id)
     total_debited = initial_balance - final_balance
     elapsed = time.time() - start_total
-    
-    final_text = (f"✅ TXT CHECK COMPLETED\n\n"
-                  f"📁 Total cards: {total_cards}\n"
-                  f"🔥 Charged: {stats['charged']}\n"
-                  f"💳 Live: {stats['live']}\n"
-                  f"💀 Dead: {stats['dead']}\n"
-                  f"⚠️ Skip: {stats['skip']}\n"
-                  f"❌ Error: {stats['error']}\n\n"
-                  f"💰 Total debited: {total_debited:.4f} RSM\n"
-                  f"💎 New Balance: {final_balance:.6f} RSM\n"
-                  f"⏱️ Total time: {elapsed:.2f} seconds")
-                  
+
+    if stopped_early:
+        header = "🛑 TXT CHECK DIHENTIKAN"
+        processed_info = f"📌 Diproses: {processed}/{total_cards} kartu\n"
+    else:
+        header = "✅ TXT CHECK COMPLETED"
+        processed_info = f"📁 Total cards: {total_cards}\n"
+
+    final_text = (
+        f"{header}\n\n"
+        f"{processed_info}"
+        f"🔥 Charged: {stats['charged']}\n"
+        f"💳 Live: {stats['live']}\n"
+        f"💀 Dead: {stats['dead']}\n"
+        f"⚠️ Skip: {stats['skip']}\n"
+        f"❌ Error: {stats['error']}\n\n"
+        f"💰 Total debited: {total_debited:.4f} RSM\n"
+        f"💎 New Balance: {final_balance:.6f} RSM\n"
+        f"⏱️ Total time: {elapsed:.2f} seconds"
+    )
+
     await status_msg.edit_text(final_text)
 
 
@@ -672,7 +810,7 @@ async def cancel_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ============ MAIN ============
 def main():
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("balance", balance_cmd))
     app.add_handler(CommandHandler("wallet", wallet_cmd))
@@ -681,15 +819,14 @@ def main():
     app.add_handler(CommandHandler("cancel", cancel_deposit))
     app.add_handler(CommandHandler("claimed", list_claimed))
     app.add_handler(CommandHandler("transfer", transfer_cmd))
-    # Proxy commands (1 user 1 proxy)
     app.add_handler(CommandHandler("setproxy", set_proxy_cmd))
     app.add_handler(CommandHandler("proxy", proxy_cmd))
     app.add_handler(CommandHandler("removeproxy", remove_proxy_cmd))
-    # Shopify commands
     app.add_handler(CommandHandler("sh", sh_cmd))
     app.add_handler(CommandHandler("msh", msh_cmd))
     app.add_handler(CommandHandler("shtxt", shtxt_cmd))
     app.add_handler(CommandHandler("shop", shop_stub))
+    app.add_handler(CallbackQueryHandler(shtxt_stop_callback, pattern=r"^shtxt_stop:"))
     app.add_handler(CallbackQueryHandler(menu_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, transfer_response_handler))
     print("🤖 Schutz CHK Bot running...")
