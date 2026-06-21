@@ -725,12 +725,25 @@ async def deposit_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("❌ Invalid amount")
         return
+    
     from economy.deposits.create_invoice import create_invoice
     invoice = create_invoice(update.effective_user.id, amount)
+    
     if invoice["status"] == "failed":
         await update.message.reply_text(f"❌ Failed: {invoice.get('reason')}")
         return
-    msg = f"💳 INVOICE\n💰 {amount:.2f} RSM\n🆔 {invoice['ref_id']}\n🔗 {invoice['pay_url']}\nExpired: {invoice['expire']}\n\nAfter payment: /check {invoice['ref_id']}"
+    
+    # INI HARUS KELUAR DARI IF
+    msg = f"""💳 INVOICE
+💰 {amount:.2f} RSM
+💵 Rate: {invoice['rsm_rate']:,.0f} IDR/RSM
+💰 Total: {invoice['amount_idr']:,.0f} IDR
+🆔 Ref ID: {invoice['ref_id']}
+🔗 {invoice['pay_url']}
+Expired: {invoice['expire']}
+
+After payment: /check {invoice['ref_id']}"""
+    
     await update.message.reply_text(msg)
 
 async def check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
