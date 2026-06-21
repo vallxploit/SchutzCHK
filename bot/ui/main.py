@@ -183,13 +183,30 @@ async def set_proxy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def check_proxy_alive(proxy_url):
     def _check():
         try:
-            proxy_handler = urllib.request.ProxyHandler({'http': proxy_url, 'https': proxy_url})
+            proxy_handler = urllib.request.ProxyHandler({
+                'http': proxy_url,
+                'https': proxy_url
+            })
             opener = urllib.request.build_opener(proxy_handler)
-            opener.addheaders = [('User-Agent', 'Mozilla/5.0')]
-            with opener.open("https://checkip.amazonaws.com/", timeout=10) as response:
+            opener.addheaders = [
+                ('User-Agent', 'curl/8.19.0'),  # Plain UA, less likely diblok
+                ('Accept', '*/*'),
+                ('Connection', 'close'),         # Hindari keep-alive issues
+            ]
+
+            with opener.open("http://icanhazip.com/", timeout=15) as response:
                 if response.status == 200:
                     ip = response.read().decode().strip()
-                    return True, ip
+                    # Validasi bahwa output beneran IP, bukan HTML error
+                    if ip and len(ip) < 50 and '.' in ip:
+                        return True, ip
+            return False, None
+
+        except urllib.error.HTTPError as e:
+            print(f"HTTP Error {e.code}: {e.reason}")
+            return False, None
+        except urllib.error.URLError as e:
+            print(f"URL Error: {e.reason}")
             return False, None
         except Exception as e:
             print(f"Proxy check error: {e}")
