@@ -2,6 +2,7 @@ import requests
 import secrets
 import string
 import time
+from services.gold_price import get_rsm_rate  # <-- IMPORT INI
 
 DB_URL = "https://api.paymentkita.com/v1/order"
 MERCHANT_ID = "PKM51558944"
@@ -13,8 +14,15 @@ def generate_ref_id():
     return f"REICHS-{rand}"
 
 def create_invoice(telegram_id: int, nominal: float):
-    # Konversi RSM ke IDR (1 RSM = 10000 IDR sementara)
-    nominal_idr = max(int(nominal * 10000), 100)
+    # Ambil harga RSM terkini (mengikuti emas)
+    rsm_rate, _, _ = get_rsm_rate()  # rsm_rate dalam IDR
+    
+    # Konversi RSM ke IDR
+    nominal_idr = int(nominal * rsm_rate)
+    
+    # Pastikan minimal 100 IDR (biar gak ditolak PaymentKita)
+    if nominal_idr < 100:
+        nominal_idr = 100
     
     ref_id = generate_ref_id()
     
@@ -44,6 +52,8 @@ def create_invoice(telegram_id: int, nominal: float):
             "pay_url": d["pay_url"],
             "qr_link": d["qr_link"],
             "amount": nominal,
+            "amount_idr": nominal_idr,  # tambahin biar tau konversi
+            "rsm_rate": rsm_rate,      # tambahin rate yang dipake
             "expire": d["expired_at"]
         }
     except Exception as e:
