@@ -186,7 +186,7 @@ async def check_proxy_alive(proxy_url):
             proxy_handler = urllib.request.ProxyHandler({'http': proxy_url, 'https': proxy_url})
             opener = urllib.request.build_opener(proxy_handler)
             opener.addheaders = [('User-Agent', 'Mozilla/5.0')]
-            with opener.open("http://httpbin.org/ip", timeout=10) as response:
+            with opener.open("https://checkip.amazonaws.com/", timeout=20) as response:
                 if response.status == 200:
                     data = json.loads(response.read().decode())
                     return True, data.get("origin", "Unknown")
