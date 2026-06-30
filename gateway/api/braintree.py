@@ -59,8 +59,8 @@ def parse_response(data: dict) -> dict:
     # Cek status berdasarkan response
     response_lower = response_text.lower()
     
-    # Approved
-    if "avs" in response_lower or "bien" in response_lower or "funds" in response_lower:
+    # Approved: avs / bien / funds / response kosong
+    if "avs" in response_lower or "bien" in response_lower or "funds" in response_lower or response_text == "":
         status = "APPROVED"
     # Risk
     elif "risk" in response_lower:
