@@ -42,6 +42,13 @@ async def show_command_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 `/shtxt` - Check from .txt file
 
 ━━━━━━━━━━━━━━━━━━━━━━
+☘️ BRAINTREE AUTH
+━━━━━━━━━━━━━━━━━━━━━━
+`/br <cc|mm|yy|cvv>` - Single card check
+`/mbr <card1> <card2> ...` - Mass check (max 20 cards)
+`/brtxt` - Check from .txt file
+
+━━━━━━━━━━━━━━━━━━━━━━
 💳 CREDIT USAGE
 ━━━━━━━━━━━━━━━━━━━━━━
 • Dead card: `0.001` RSM

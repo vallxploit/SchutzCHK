@@ -8,6 +8,7 @@ import urllib.request
 import json
 from dotenv import load_dotenv
 from telegram import Update
+from gateway.api.braintree import check_braintree
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 load_dotenv()
@@ -263,6 +264,285 @@ COST = {
     "ERROR": 0.0,
     "CAPTCHA_REQUIRED": 0.0
 }
+
+COST_BRAINTREE = {
+    "APPROVED": 0.1,
+    "DEAD": 0.001,
+    "RISK": 0.0,
+    "ERROR": 0.0,
+    "SKIP": 0.0
+}
+
+async def br_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    start_time = time.time()
+    user_id = update.effective_user.id
+    
+    # Cooldown
+    sisa = check_cooldown(user_id, "sh")  # pake cooldown yang sama
+    if sisa > 0:
+        await update.message.reply_text(f"⏳ Cooldown — tunggu {sisa:.1f} detik lagi.")
+        return
+    set_cooldown(user_id, "sh")
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /br <cc|mm|yy|cvv>\nContoh: /br 4539730059665764|08|2026|123")
+        return
+    
+    card_str = args[0]
+    parts = card_str.split("|")
+    if len(parts) < 4:
+        await update.message.reply_text("❌ Format salah. Gunakan: cc|mm|yy|cvv")
+        return
+    
+    msg = await update.message.reply_text("⏳ Processing...")
+    
+    result = await check_braintree(card_str)
+    status = result.get("status", "ERROR")
+    response_text = result.get("response", "N/A")
+    gate = result.get("gate", "Braintree Auth")
+    time_taken = result.get("time", "N/A")
+    
+    cost = COST_BRAINTREE.get(status, 0.0)
+    new_bal = None
+    
+    if cost > 0:
+        current = get_balance(user_id)
+        if current < cost:
+            await msg.edit_text(f"❌ Insufficient balance. Need {cost} RSM")
+            return
+        new_bal = add_balance(user_id, -cost)
+        add_reserve(cost, f"braintree_fee_{user_id}_{int(time.time())}")
+        create_ledger_entry(user_id, "GATEWAY_FEE", -cost, current, new_bal,
+                            f"Braintree check - {status} - {card_str[:12]}...")
+    
+    # Format output
+    if status == "APPROVED":
+        emoji, statustxt = "🔥", "𝐀𝐩𝐩𝐫𝐨𝐯𝐞𝐝 🔥"
+    elif status == "DEAD":
+        emoji, statustxt = "💀", "𝐃𝐞𝐚𝐝 💀"
+    elif status == "RISK":
+        emoji, statustxt = "🏴‍☠️", "𝐑𝐢𝐬𝐤 🏴‍☠️"
+    else:
+        emoji, statustxt = "⚠️", "𝐄𝐫𝐫𝐨𝐫 ⚠️"
+    
+    elapsed = time.time() - start_time
+    
+    output = f"""{emoji} 𝗕𝗥𝗔𝗜𝗡𝗧𝗥𝗘𝗘 𝗔𝗨𝗧𝗛 {emoji}
+-------------------------------------------------------
+💳 Card: {card_str}
+💬 Status: {statustxt}
+🔔 Response: {response_text}
+⚙️ Gateway: {gate}
+⏱️ Time: {time_taken if time_taken != 'N/A' else f'{elapsed:.2f}s'}
+-------------------------------------------------------
+💲 Cost: {cost} RSM"""
+    
+    await msg.edit_text(output.strip())
+    if cost > 0 and new_bal is not None:
+        await update.message.reply_text(f"💰 Debited {cost} RSM (Balance: {new_bal:.6f} RSM)")
+        
+async def mbr_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    start_total = time.time()
+    user_id = update.effective_user.id
+    
+    sisa = check_cooldown(user_id, "msh")
+    if sisa > 0:
+        await update.message.reply_text(f"⏳ Cooldown — tunggu {sisa:.1f} detik lagi.")
+        return
+    set_cooldown(user_id, "msh")
+    
+    args = context.args
+    if not args:
+        await update.message.reply_text("Usage: /mbr <card1> <card2> ... (max 20 cards)")
+        return
+    
+    cards = args[:20]
+    total_cards = len(cards)
+    if total_cards == 0:
+        return
+    
+    msg = await update.message.reply_text(f"⏳ Processing {total_cards} cards...")
+    
+    tasks = [check_braintree(card) for card in cards]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    total_cost = 0.0
+    current_balance = get_balance(user_id)
+    initial_balance = current_balance
+    output_lines = []
+    
+    stats = {"approved": 0, "dead": 0, "risk": 0, "skip": 0, "error": 0}
+    
+    for idx, (card, result) in enumerate(zip(cards, results), 1):
+        if isinstance(result, Exception):
+            stats["error"] += 1
+            output_lines.append(f"{idx}. ❌ Error: {str(result)[:30]}")
+            continue
+        
+        status = result.get("status", "ERROR")
+        cost = COST_BRAINTREE.get(status, 0.0)
+        
+        if cost > 0:
+            if current_balance < cost:
+                stats["skip"] += 1
+                output_lines.append(f"{idx}. ⚠️ Insufficient balance, skipped.")
+                continue
+            old_bal = current_balance
+            current_balance = add_balance(user_id, -cost)
+            create_ledger_entry(user_id, "GATEWAY_FEE", -cost, old_bal, current_balance,
+                                f"Mass Braintree - {status} - {card[:12]}...")
+            add_reserve(cost, f"braintree_mass_{user_id}_{int(time.time())}_{idx}")
+            total_cost += cost
+        
+        response_text = result.get("response", "N/A")
+        
+        if status == "APPROVED":
+            stats["approved"] += 1
+            emoji = "🔥"
+            statustxt = "Approved"
+        elif status == "DEAD":
+            stats["dead"] += 1
+            emoji = "💀"
+            statustxt = "Dead"
+        elif status == "RISK":
+            stats["risk"] += 1
+            emoji = "🏴‍☠️"
+            statustxt = "Risk"
+        else:
+            stats["error"] += 1
+            emoji = "⚠️"
+            statustxt = "Error"
+        
+        output_lines.append(f"{idx}. {emoji} {statustxt} | {card[:20]}... | {response_text[:30]}")
+    
+    final_balance = get_balance(user_id)
+    total_debited = initial_balance - final_balance
+    elapsed = time.time() - start_total
+    
+    final_text = f"""✅ MASS CHECK COMPLETED
+Total cards: {total_cards} | Total debited: {total_debited:.4f} RSM
+New Balance: {final_balance:.6f} RSM
+⏱️ Total time: {elapsed:.2f} seconds
+
+🔥 Approved: {stats['approved']}
+💀 Dead: {stats['dead']}
+🏴‍☠️ Risk: {stats['risk']}
+⚠️ Skip: {stats['skip']}
+❌ Error: {stats['error']}
+
+{chr(10).join(output_lines[:20])}"""
+    
+    if len(final_text) > 4000:
+        await msg.edit_text(final_text[:2000])
+        await update.message.reply_text(final_text[2000:4000])
+    else:
+        await msg.edit_text(final_text)
+    
+    if total_cost > 0:
+        await update.message.reply_text(f"💰 Total fee deducted: {total_cost:.4f} RSM")
+        
+async def brtxt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if not update.message.reply_to_message or not update.message.reply_to_message.document:
+        await update.message.reply_text("❌ Reply ke file .txt yang berisi kartu\nContoh: /brtxt (reply ke file txt)")
+        return
+    
+    document = update.message.reply_to_message.document
+    if not document.file_name.endswith('.txt'):
+        await update.message.reply_text("❌ Harus file .txt")
+        return
+    
+    status_msg = await update.message.reply_text("📥 Downloading file...")
+    file = await document.get_file()
+    file_content = await file.download_as_bytearray()
+    text_content = file_content.decode('utf-8', errors='ignore')
+    
+    lines = text_content.split('\n')
+    cards = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        card = line.replace('/', '|')
+        parts = card.split('|')
+        if len(parts) >= 4:
+            cards.append(f"{parts[0]}|{parts[1]}|{parts[2]}|{parts[3]}")
+    
+    total_cards = len(cards)
+    if total_cards == 0:
+        await status_msg.edit_text("❌ Tidak ada kartu valid dalam file")
+        return
+    
+    if total_cards > 20000:
+        cards = cards[:20000]
+        total_cards = 20000
+    
+    await status_msg.edit_text(f"⏳ Processing {total_cards} cards...")
+    
+    stats = {"approved": 0, "dead": 0, "risk": 0, "skip": 0, "error": 0}
+    total_cost = 0.0
+    current_balance = get_balance(user_id)
+    initial_balance = current_balance
+    processed = 0
+    
+    for idx, card in enumerate(cards, 1):
+        result = await check_braintree(card)
+        processed += 1
+        status = result.get("status", "ERROR")
+        cost = COST_BRAINTREE.get(status, 0.0)
+        
+        if cost > 0:
+            if current_balance < cost:
+                stats["skip"] += 1
+                continue
+            old_bal = current_balance
+            current_balance = add_balance(user_id, -cost)
+            create_ledger_entry(user_id, "GATEWAY_FEE", -cost, old_bal, current_balance,
+                                f"TXT Braintree - {status} - {card[:12]}...")
+            add_reserve(cost, f"brtxt_{user_id}_{int(time.time())}_{idx}")
+            total_cost += cost
+        
+        if status == "APPROVED":
+            stats["approved"] += 1
+        elif status == "DEAD":
+            stats["dead"] += 1
+        elif status == "RISK":
+            stats["risk"] += 1
+        else:
+            stats["error"] += 1
+        
+        if processed % 10 == 0 or processed == total_cards:
+            progress_text = f"""⏳ PROGRESS: {processed}/{total_cards}
+
+🔥 Approved: {stats['approved']}
+💀 Dead: {stats['dead']}
+🏴‍☠️ Risk: {stats['risk']}
+⚠️ Skip: {stats['skip']}
+❌ Error: {stats['error']}"""
+            try:
+                await status_msg.edit_text(progress_text)
+            except:
+                pass
+    
+    final_balance = get_balance(user_id)
+    total_debited = initial_balance - final_balance
+    
+    final_text = f"""✅ TXT CHECK COMPLETED
+
+📁 Total cards: {total_cards}
+
+🔥 Approved: {stats['approved']}
+💀 Dead: {stats['dead']}
+🏴‍☠️ Risk: {stats['risk']}
+⚠️ Skip: {stats['skip']}
+❌ Error: {stats['error']}
+
+💰 Total debited: {total_debited:.4f} RSM
+💎 New Balance: {final_balance:.6f} RSM"""
+    
+    await status_msg.edit_text(final_text)
 
 async def sh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_time = time.time()
@@ -857,6 +1137,9 @@ def main():
     app.add_handler(CommandHandler("msh", msh_cmd))
     app.add_handler(CommandHandler("shtxt", shtxt_cmd))
     app.add_handler(CommandHandler("shop", shop_stub))
+    app.add_handler(CommandHandler("br", br_cmd))
+    app.add_handler(CommandHandler("mbr", mbr_cmd))
+    app.add_handler(CommandHandler("brtxt", brtxt_cmd))
     app.add_handler(CallbackQueryHandler(shtxt_stop_callback, pattern=r"^shtxt_stop:"))
     app.add_handler(CallbackQueryHandler(menu_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, transfer_response_handler))
