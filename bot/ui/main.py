@@ -26,6 +26,8 @@ pending_transfers = {}
 _cooldowns: dict = {}
 _shtxt_sessions: dict = {}
 _shtxt_cooldown: dict = {}
+_br_txt_sessions: dict = {}
+_br_txt_cooldown: dict = {}
 
 COOLDOWN_SECONDS = {
     "sh": 3,
@@ -345,210 +347,218 @@ async def br_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def mbr_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_total = time.time()
     user_id = update.effective_user.id
-    
     sisa = check_cooldown(user_id, "msh")
     if sisa > 0:
         await update.message.reply_text(f"⏳ Cooldown — tunggu {sisa:.1f} detik lagi.")
         return
     set_cooldown(user_id, "msh")
-    
     args = context.args
     if not args:
         await update.message.reply_text("Usage: /mbr <card1> <card2> ... (max 20 cards)")
         return
-    
     cards = args[:20]
     total_cards = len(cards)
-    if total_cards == 0:
-        return
-    
-    msg = await update.message.reply_text(f"⏳ Processing {total_cards} cards...")
-    
+    if total_cards == 0: return
+    msg = await update.message.reply_text(f"⏳ Processing {total_cards} cards...\nPlease wait, proses berjalan di background.")
     tasks = [check_braintree(card) for card in cards]
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    
     total_cost = 0.0
+    all_output_lines = []
     current_balance = get_balance(user_id)
     initial_balance = current_balance
-    output_lines = []
-    
     stats = {"approved": 0, "dead": 0, "risk": 0, "skip": 0, "error": 0}
     
     for idx, (card, result) in enumerate(zip(cards, results), 1):
         if isinstance(result, Exception):
             stats["error"] += 1
-            output_lines.append(f"{idx}. ❌ Error: {str(result)[:30]}")
+            all_output_lines.append(f"{idx}. ❌ Error: {str(result)[:30]}")
             continue
-        
         status = result.get("status", "ERROR")
         cost = COST_BRAINTREE.get(status, 0.0)
-        
         if cost > 0:
             if current_balance < cost:
                 stats["skip"] += 1
-                output_lines.append(f"{idx}. ⚠️ Insufficient balance, skipped.")
+                all_output_lines.append(f"{idx}. ⚠️ Insufficient balance, skipped.")
                 continue
             old_bal = current_balance
             current_balance = add_balance(user_id, -cost)
-            create_ledger_entry(user_id, "GATEWAY_FEE", -cost, old_bal, current_balance,
-                                f"Mass Braintree - {status} - {card[:12]}...")
+            create_ledger_entry(user_id, "GATEWAY_FEE", -cost, old_bal, current_balance, f"Mass Braintree - {status} - {card[:12]}...")
             add_reserve(cost, f"braintree_mass_{user_id}_{int(time.time())}_{idx}")
             total_cost += cost
         
         response_text = result.get("response", "N/A")
+        gate = result.get("gate", "Braintree Auth")
+        if status == "APPROVED": stats["approved"] += 1; emoji, statustxt = "🔥", "𝐀𝐩𝐩𝐫𝐨𝐯𝐞𝐝 🔥"
+        elif status == "DEAD": stats["dead"] += 1; emoji, statustxt = "💀", "𝐃𝐞𝐚𝐝 💀"
+        elif status == "RISK": stats["risk"] += 1; emoji, statustxt = "🏴‍☠️", "𝐑𝐢𝐬𝐤 🏴‍☠️"
+        else: stats["error"] += 1; emoji, statustxt = "⚠️", "𝐄𝐫𝐫𝐨𝐫 ⚠️"
         
-        if status == "APPROVED":
-            stats["approved"] += 1
-            emoji = "🔥"
-            statustxt = "Approved"
-        elif status == "DEAD":
-            stats["dead"] += 1
-            emoji = "💀"
-            statustxt = "Dead"
-        elif status == "RISK":
-            stats["risk"] += 1
-            emoji = "🏴‍☠️"
-            statustxt = "Risk"
-        else:
-            stats["error"] += 1
-            emoji = "⚠️"
-            statustxt = "Error"
-        
-        output_lines.append(f"{idx}. {emoji} {statustxt} | {card[:20]}... | {response_text[:30]}")
-    
+        part = f"""{emoji} 𝗕𝗥𝗔𝗜𝗡𝗧𝗥𝗘𝗘 𝗔𝗨𝗧𝗛 {emoji}
+-------------------------------------------------------
+💳 Card: {card}
+💬 Status: {statustxt}
+🔔 Response: {response_text}
+⚙️ Gateway: {gate}
+-------------------------------------------------------
+💲 Cost: {cost} RSM"""
+        all_output_lines.append(part)
+
     final_balance = get_balance(user_id)
     total_debited = initial_balance - final_balance
     elapsed = time.time() - start_total
+    final_text = f"✅ MASS CHECK COMPLETED\nTotal cards: {total_cards} | Total debited: {total_debited:.4f} RSM\nNew Balance: {final_balance:.6f} RSM\n⏱️ Total time: {elapsed:.2f} seconds\n"
+    full_output = final_text + "\n".join(all_output_lines)
     
-    final_text = f"""✅ MASS CHECK COMPLETED
-Total cards: {total_cards} | Total debited: {total_debited:.4f} RSM
-New Balance: {final_balance:.6f} RSM
-⏱️ Total time: {elapsed:.2f} seconds
-
-🔥 Approved: {stats['approved']}
-💀 Dead: {stats['dead']}
-🏴‍☠️ Risk: {stats['risk']}
-⚠️ Skip: {stats['skip']}
-❌ Error: {stats['error']}
-
-{chr(10).join(output_lines[:20])}"""
-    
-    if len(final_text) > 4000:
-        await msg.edit_text(final_text[:2000])
-        await update.message.reply_text(final_text[2000:4000])
-    else:
+    if len(full_output) > 4000:
         await msg.edit_text(final_text)
-    
+        for i in range(0, len(all_output_lines), 3):
+            chunk = "\n".join(all_output_lines[i:i+3])
+            try:
+                await update.message.reply_text(chunk)
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                print(f"Error sending chunk: {e}")
+    else:
+        await msg.edit_text(full_output)
     if total_cost > 0:
         await update.message.reply_text(f"💰 Total fee deducted: {total_cost:.4f} RSM")
         
 async def brtxt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     user_id = update.effective_user.id
-
+    if user_id in _br_txt_sessions:
+        await update.message.reply_text("⚠️ Kamu masih punya /brtxt yang sedang berjalan.\nTunggu sampai selesai atau tekan tombol STOP di pesan sebelumnya.")
+        return
+    sisa_cd = _br_txt_cooldown.get(user_id, 0)
+    sisa_detik = COOLDOWN_SECONDS.get("brtxt", 10) - (time.time() - sisa_cd)
+    if sisa_cd > 0 and sisa_detik > 0:
+        await update.message.reply_text(f"⏳ Cooldown /brtxt — tunggu {sisa_detik:.1f} detik lagi.")
+        return
+    
+    start_total = time.time()
     if not update.message.reply_to_message or not update.message.reply_to_message.document:
         await update.message.reply_text("❌ Reply ke file .txt yang berisi kartu\nContoh: /brtxt (reply ke file txt)")
         return
-
     document = update.message.reply_to_message.document
     if not document.file_name.endswith('.txt'):
         await update.message.reply_text("❌ Harus file .txt")
         return
-
+    
+    username = update.effective_user.username or update.effective_user.first_name
     status_msg = await update.message.reply_text("📥 Downloading file...")
     file = await document.get_file()
     file_content = await file.download_as_bytearray()
     text_content = file_content.decode('utf-8', errors='ignore')
-
     lines = text_content.split('\n')
     cards = []
     for line in lines:
         line = line.strip()
-        if not line:
-            continue
+        if not line: continue
         card = line.replace('/', '|')
-        parts = card.split('|')
-        if len(parts) >= 4:
-            cards.append(f"{parts[0]}|{parts[1]}|{parts[2]}|{parts[3]}")
-
+        parts_card = card.split('|')
+        if len(parts_card) >= 4:
+            cards.append(f"{parts_card[0]}|{parts_card[1]}|{parts_card[2]}|{parts_card[3]}")
+    
     total_cards = len(cards)
     if total_cards == 0:
         await status_msg.edit_text("❌ Tidak ada kartu valid dalam file")
         return
-
     if total_cards > 20000:
         cards = cards[:20000]
         total_cards = 20000
-
-    await status_msg.edit_text(f"⏳ Processing {total_cards} cards...")
-
-    stats = {"approved": 0, "dead": 0, "risk": 0, "skip": 0, "error": 0}
+    
+    stop_event = asyncio.Event()
+    _br_txt_sessions[user_id] = stop_event
+    stop_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("🛑 STOP", callback_data=f"brtxt_stop:{user_id}")]])
+    await status_msg.edit_text(f"⏳ Processing {total_cards} cards in batches of 5...\nTekan STOP untuk menghentikan.", reply_markup=stop_keyboard)
+    
+    stats = {"total": total_cards, "approved": 0, "dead": 0, "risk": 0, "skip": 0, "error": 0}
     total_cost = 0.0
     current_balance = get_balance(user_id)
     initial_balance = current_balance
     processed = 0
-
-    for idx, card in enumerate(cards, 1):
-        result = await check_braintree(card)
-        processed += 1
-        status = result.get("status", "ERROR")
-        cost = COST_BRAINTREE.get(status, 0.0)
-
-        card_display = card[:20] + "..." if len(card) > 20 else card
-        response_display = result.get('response', 'N/A')[:40]
-
-        if cost > 0:
-            if current_balance < cost:
-                stats["skip"] += 1
-                continue
-            old_bal = current_balance
-            current_balance = add_balance(user_id, -cost)
-            create_ledger_entry(user_id, "GATEWAY_FEE", -cost, old_bal, current_balance,
-                                f"TXT Braintree - {status} - {card[:12]}...")
-            add_reserve(cost, f"brtxt_{user_id}_{int(time.time())}_{idx}")
-            total_cost += cost
-
-        if status == "APPROVED":
-            stats["approved"] += 1
-        elif status == "DEAD":
-            stats["dead"] += 1
-        elif status == "RISK":
-            stats["risk"] += 1
+    last_edit_time = 0
+    batch_size = 5
+    stopped_early = False
+    
+    try:
+        for batch_start in range(0, total_cards, batch_size):
+            if stop_event.is_set():
+                stopped_early = True
+                break
+            batch_cards = cards[batch_start:batch_start + batch_size]
+            tasks = [check_braintree(card) for card in batch_cards]
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            for card, result in zip(batch_cards, batch_results):
+                processed += 1
+                card_display = card[:20] + "..." if len(card) > 20 else card
+                if isinstance(result, Exception):
+                    stats["error"] += 1
+                    response_display = "Error"
+                else:
+                    status = result.get("status", "ERROR")
+                    cost = COST_BRAINTREE.get(status, 0.0)
+                    response_display = result.get('response', 'N/A')[:40]
+                    if cost > 0:
+                        if current_balance < cost:
+                            stats["skip"] += 1
+                            continue
+                        old_bal = current_balance
+                        current_balance = add_balance(user_id, -cost)
+                        create_ledger_entry(user_id, "GATEWAY_FEE", -cost, old_bal, current_balance, f"TXT Braintree - {status} - {card[:12]}...")
+                        add_reserve(cost, f"brtxt_{user_id}_{int(time.time())}_{processed}")
+                        total_cost += cost
+                    if status == "APPROVED":
+                        stats["approved"] += 1
+                        await send_card_detail_br(update, card, status, result, username)
+                    elif status == "DEAD": stats["dead"] += 1
+                    elif status == "RISK": stats["risk"] += 1
+                    else: stats["error"] += 1
+                
+                if processed % 10 == 0 or processed == total_cards:
+                    if time.time() - last_edit_time >= 2.0 or processed == total_cards:
+                        progress_text = (
+                            f"📊 PROGRESS: {processed}/{total_cards}\n"
+                            f"💳 Card: {card_display}\n"
+                            f"🫆 Response: {response_display}\n"
+                            f"🔥 Approved: {stats['approved']}\n"
+                            f"💀 Dead: {stats['dead']}\n"
+                            f"🏴‍☠️ Risk: {stats['risk']}\n"
+                            f"⚠️ Skip: {stats['skip']}\n"
+                            f"❌ Error: {stats['error']}"
+                        )
+                        try:
+                            await status_msg.edit_text(progress_text, reply_markup=stop_keyboard)
+                            last_edit_time = time.time()
+                        except Exception:
+                            pass
+            await asyncio.sleep(0.1)
+    finally:
+        _br_txt_sessions.pop(user_id, None)
+        _br_txt_cooldown[user_id] = time.time()
+        final_balance = get_balance(user_id)
+        total_debited = initial_balance - final_balance
+        elapsed = time.time() - start_total
+        if stopped_early:
+            header = "🛑 TXT CHECK DIHENTIKAN"
+            processed_info = f"📌 Diproses: {processed}/{total_cards} kartu\n"
         else:
-            stats["error"] += 1
-
-        # UPDATE TIAP 5 KARTU (Biar gak kena rate limit)
-        if processed % 5 == 0 or processed == total_cards:
-            progress_text = f"""⏳ PROGRESS: {processed}/{total_cards}
-💳 Card: {card_display}
-🫆 Response: {response_display}
-
-🔥 Approved: {stats['approved']}
-💀 Dead: {stats['dead']}
-🏴‍☠️ Risk: {stats['risk']}
-⚠️ Skip: {stats['skip']}
-❌ Error: {stats['error']}"""
-            try:
-                await status_msg.edit_text(progress_text)
-            except:
-                pass
-
-    final_balance = get_balance(user_id)
-    total_debited = initial_balance - final_balance
-
-    final_text = f"""✅ TXT CHECK COMPLETED
-
-📁 Total cards: {total_cards}
-
-🔥 Approved: {stats['approved']}
-💀 Dead: {stats['dead']}
-🏴‍☠️ Risk: {stats['risk']}
-⚠️ Skip: {stats['skip']}
-❌ Error: {stats['error']}
-
-💰 Total debited: {total_debited:.4f} RSM
-💎 New Balance: {final_balance:.6f} RSM"""
-
-    await status_msg.edit_text(final_text)
+            header = "✅ TXT CHECK COMPLETED"
+            processed_info = f"📁 Total cards: {total_cards}\n"
+        final_text = (
+            f"{header}\n"
+            f"{processed_info}"
+            f"🔥 Approved: {stats['approved']}\n"
+            f"💀 Dead: {stats['dead']}\n"
+            f"🏴‍☠️ Risk: {stats['risk']}\n"
+            f"⚠️ Skip: {stats['skip']}\n"
+            f"❌ Error: {stats['error']}\n"
+            f"💰 Total debited: {total_debited:.4f} RSM\n"
+            f"💎 New Balance: {final_balance:.6f} RSM\n"
+            f"⏱️ Total time: {elapsed:.2f} seconds"
+        )
+        await status_msg.edit_text(final_text)
 
 async def sh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_time = time.time()
@@ -765,32 +775,38 @@ async def shtxt_stop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     else:
         await query.edit_message_text("ℹ️ Session sudah tidak aktif.")
 
-async def send_card_detail(update: Update, card: str, status: str, result: dict, bin_info: dict, username: str):
-    amount_display = f"{result.get('amount', '0')} {result.get('currency', 'USD')}"
-    if status == "CHARGED":
+async def send_card_detail_br(update: Update, card: str, status: str, result: dict, username: str):
+    if status == "APPROVED":
         emoji = "🔥"
-        status_text = "𝐂𝐡𝐚𝐫𝐠𝐞𝐝 🔥"
+        status_text = "𝐀𝐩𝐩𝐫𝐨𝐯𝐞𝐝 🔥"
     else:
-        emoji = "⚡"
-        status_text = "𝐋𝐢𝐯𝐞 ⚡"
-
-    level = bin_info.get('level', bin_info.get('card_type', 'Unknown'))
-
-    raw = result.get('raw', {})
-    response_text = raw.get('response', 'N/A') if isinstance(raw, dict) else str(raw)[:60]
-
+        return
+    response_text = result.get('response', 'N/A')
+    gate = result.get('gate', 'Braintree Auth')
     msg = f"""{emoji} {status_text}
 💳 𝗖𝗖: {card}
 🔔 𝗥𝗲𝘀𝗽𝗼𝗻𝘀𝗲: {response_text}
-⚙️ 𝗚𝗮𝘁𝗲: 𝗦𝗵𝗼𝗽𝗶𝗳𝘆 𝗣𝗮𝘆𝗺𝗲𝗻𝘁𝘀
-💲 𝗣𝗿𝗶𝗰𝗲: {amount_display}
+⚙️ 𝗚𝗮𝘁𝗲: {gate}
 ━━━━━━━━━━━━━━━━━━━━━━
-ℹ️ 𝗜𝗻𝗳𝗼: {bin_info.get('brand', 'Unknown')} | {bin_info.get('card_type', 'Unknown')} | {level}
-🏦 𝗕𝗮𝗻𝗸: {bin_info.get('bank', 'Unknown')}
-🌍 𝗖𝗼𝘂𝗻𝘁𝗿𝘆: {bin_info.get('country_flag', '')} {bin_info.get('country', 'Unknown')}
 👤 𝗖𝗵𝗲𝗰𝗸𝗲𝗱 𝗯𝘆: @{username}"""
-
     await update.message.reply_text(msg)
+
+async def brtxt_stop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    parts = data.split(":")
+    if len(parts) != 2: return
+    requester_id = query.from_user.id
+    owner_id = int(parts[1])
+    if requester_id != owner_id:
+        await query.answer("❌ Ini bukan session kamu.", show_alert=True)
+        return
+    if owner_id in _br_txt_sessions:
+        _br_txt_sessions[owner_id].set()
+        await query.edit_message_text("🛑 Stop signal dikirim, menunggu batch selesai...")
+    else:
+        await query.edit_message_text("ℹ️ Session sudah tidak aktif.")
 
 async def shtxt_stop_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk tombol STOP di /shtxt."""
@@ -1135,6 +1151,7 @@ def main():
     app.add_handler(CommandHandler("check", check_cmd))
     app.add_handler(CommandHandler("cancel", cancel_deposit))
     app.add_handler(CommandHandler("claimed", list_claimed))
+    app.add_handler(CallbackQueryHandler(brtxt_stop_callback, pattern=r"^brtxt_stop:"))
     app.add_handler(CommandHandler("transfer", transfer_cmd))
     app.add_handler(CommandHandler("setproxy", set_proxy_cmd))
     app.add_handler(CommandHandler("proxy", proxy_cmd))
