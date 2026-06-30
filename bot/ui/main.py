@@ -444,21 +444,21 @@ New Balance: {final_balance:.6f} RSM
         
 async def brtxt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
+
     if not update.message.reply_to_message or not update.message.reply_to_message.document:
         await update.message.reply_text("❌ Reply ke file .txt yang berisi kartu\nContoh: /brtxt (reply ke file txt)")
         return
-    
+
     document = update.message.reply_to_message.document
     if not document.file_name.endswith('.txt'):
         await update.message.reply_text("❌ Harus file .txt")
         return
-    
+
     status_msg = await update.message.reply_text("📥 Downloading file...")
     file = await document.get_file()
     file_content = await file.download_as_bytearray()
     text_content = file_content.decode('utf-8', errors='ignore')
-    
+
     lines = text_content.split('\n')
     cards = []
     for line in lines:
@@ -469,30 +469,33 @@ async def brtxt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parts = card.split('|')
         if len(parts) >= 4:
             cards.append(f"{parts[0]}|{parts[1]}|{parts[2]}|{parts[3]}")
-    
+
     total_cards = len(cards)
     if total_cards == 0:
         await status_msg.edit_text("❌ Tidak ada kartu valid dalam file")
         return
-    
+
     if total_cards > 20000:
         cards = cards[:20000]
         total_cards = 20000
-    
+
     await status_msg.edit_text(f"⏳ Processing {total_cards} cards...")
-    
+
     stats = {"approved": 0, "dead": 0, "risk": 0, "skip": 0, "error": 0}
     total_cost = 0.0
     current_balance = get_balance(user_id)
     initial_balance = current_balance
     processed = 0
-    
+
     for idx, card in enumerate(cards, 1):
         result = await check_braintree(card)
         processed += 1
         status = result.get("status", "ERROR")
         cost = COST_BRAINTREE.get(status, 0.0)
-        
+
+        card_display = card[:20] + "..." if len(card) > 20 else card
+        response_display = result.get('response', 'N/A')[:40]
+
         if cost > 0:
             if current_balance < cost:
                 stats["skip"] += 1
@@ -503,7 +506,7 @@ async def brtxt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 f"TXT Braintree - {status} - {card[:12]}...")
             add_reserve(cost, f"brtxt_{user_id}_{int(time.time())}_{idx}")
             total_cost += cost
-        
+
         if status == "APPROVED":
             stats["approved"] += 1
         elif status == "DEAD":
@@ -512,9 +515,12 @@ async def brtxt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             stats["risk"] += 1
         else:
             stats["error"] += 1
-        
-        if processed % 10 == 0 or processed == total_cards:
+
+        # UPDATE TIAP 5 KARTU (Biar gak kena rate limit)
+        if processed % 5 == 0 or processed == total_cards:
             progress_text = f"""⏳ PROGRESS: {processed}/{total_cards}
+💳 Card: {card_display}
+🫆 Response: {response_display}
 
 🔥 Approved: {stats['approved']}
 💀 Dead: {stats['dead']}
@@ -525,10 +531,10 @@ async def brtxt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await status_msg.edit_text(progress_text)
             except:
                 pass
-    
+
     final_balance = get_balance(user_id)
     total_debited = initial_balance - final_balance
-    
+
     final_text = f"""✅ TXT CHECK COMPLETED
 
 📁 Total cards: {total_cards}
@@ -541,7 +547,7 @@ async def brtxt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 💰 Total debited: {total_debited:.4f} RSM
 💎 New Balance: {final_balance:.6f} RSM"""
-    
+
     await status_msg.edit_text(final_text)
 
 async def sh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
